@@ -1,9 +1,16 @@
 defaults:
-  - process: process1
-  - model: model1
+  - project: lgd_model
+  - override hydra/job_logging: none
+  - override hydra/hydra_logging: none
   - _self_
 
 data:
-  raw: data/raw/sample.csv
-  processed: data/processed/processed.csv
-  final: data/final/final.csv
+  raw_data: ./data/raw_data/LoanData_(DS_Home_Task).csv
+
+artifacts:
+  ordinal_encoder: ./models/ordinal_encoder.joblib
+  one_hot_encoder: ./models/one_hot_encoder.joblib
+  knn_imputer: ./models/knn_imputer.joblib
+  xgboost_model: ./models/xgboost_model.joblib
+  inference_pipeline: ./models/inference_pipeline.joblib
+  catboost_regression_model: ./models/catboost_regression_model.joblib  

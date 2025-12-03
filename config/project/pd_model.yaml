@@ -1,0 +1,10 @@
+name: pd_model
+description: "PD Model"
+
+data:
+  processed: ./data/processed_data/loan_data_processed.csv
+  train: ./data/feature_data/loan_data_train.csv
+  test: ./data/feature_data/loan_data_test.csv
+  features: ./data/feature_data/loan_data_features.csv
+
+pipeline: inference
