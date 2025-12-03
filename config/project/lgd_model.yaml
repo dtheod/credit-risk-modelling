@@ -1,0 +1,10 @@
+name: lgd_model
+description: "LGD Model"
+
+
+data:
+  train: ./data/feature_data/lgd_loan_data_train.csv
+  test: ./data/feature_data/lgd_loan_data_test.csv
+  features: ./data/feature_data/lgd_loan_data_features.csv
+
+pipeline: training
