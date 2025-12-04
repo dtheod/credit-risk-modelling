@@ -1,0 +1,88 @@
+{
+	"info": {
+		"_postman_id": "4cac3694-330d-4b1a-bdb8-a455a14b0f6b",
+		"name": "Credit Risk ML API Copy",
+		"description": "API for predicting probability of default on loans",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "http://localhost:8000/",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						""
+					]
+				},
+				"description": "Check if the API is running"
+			},
+			"response": []
+		},
+		{
+			"name": "Single Prediction - Low Risk",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"NewCreditCustomer\": \"Existing\",\n  \"VerificationType\": 1,\n  \"LoanDuration\": 24,\n  \"IncomeFromPrincipalEmployer\": 4000.0,\n  \"IncomeFromPension\": 0.0,\n  \"IncomeFromFamilyAllowance\": 0.0,\n  \"IncomeFromSocialWelfare\": 0.0,\n  \"IncomeFromLeavePay\": 0.0,\n  \"IncomeFromChildSupport\": 0.0,\n  \"IncomeOther\": 500.0,\n  \"EmploymentDurationCurrentEmployer\": \"MoreThan5Years\",\n  \"IncomeTotal\": 4500.0,\n  \"Education\": 4,\n  \"EmploymentStatus\": 1,\n  \"ExistingLiabilities\": 1,\n  \"LiabilitiesTotal\": 500.0,\n  \"LanguageCode\": 1,\n  \"Amount\": 2000.0,\n  \"Age\": 45,\n  \"Interest\": 10.5,\n  \"UseOfLoan\": 0,\n  \"CreditScoreEsMicroL\": \"M1\",\n  \"AmountOfPreviousLoansBeforeLoan\": 1500.0,\n  \"PreviousEarlyRepaymentsCountBeforeLoan\": 3.0,\n  \"PreviousRepaymentsBeforeLoan\": 5.0,\n  \"Country\": \"EE\",\n  \"Gender\": 1,\n  \"MonthlyPayment\": 100.0,\n  \"HomeOwnershipType\": 1,\n  \"NoOfPreviousLoansBeforeLoan\": 3.0\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/predict",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"predict"
+					]
+				},
+				"description": "Predict default probability for a low-risk loan application"
+			},
+			"response": []
+		},
+		{
+			"name": "Single Prediction - High Risk",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"NewCreditCustomer\": \"New\",\n  \"VerificationType\": 0,\n  \"LoanDuration\": 60,\n  \"IncomeFromPrincipalEmployer\": 500.0,\n  \"IncomeFromPension\": 0.0,\n  \"IncomeFromFamilyAllowance\": 0.0,\n  \"IncomeFromSocialWelfare\": 200.0,\n  \"IncomeFromLeavePay\": 0.0,\n  \"IncomeFromChildSupport\": 0.0,\n  \"IncomeOther\": 0.0,\n  \"EmploymentDurationCurrentEmployer\": \"UpTo1Year\",\n  \"IncomeTotal\": 700.0,\n  \"Education\": 1,\n  \"EmploymentStatus\": 3,\n  \"ExistingLiabilities\": 8,\n  \"LiabilitiesTotal\": 5000.0,\n  \"LanguageCode\": 1,\n  \"Amount\": 10000.0,\n  \"Age\": 22,\n  \"Interest\": 35.0,\n  \"UseOfLoan\": 1,\n  \"CreditScoreEsMicroL\": \"M10\",\n  \"AmountOfPreviousLoansBeforeLoan\": 0.0,\n  \"PreviousEarlyRepaymentsCountBeforeLoan\": 0.0,\n  \"PreviousRepaymentsBeforeLoan\": 0.0,\n  \"Country\": \"EE\",\n  \"Gender\": 0,\n  \"MonthlyPayment\": 400.0,\n  \"HomeOwnershipType\": 0,\n  \"NoOfPreviousLoansBeforeLoan\": 0.0\n}"
+				},
+				"url": {
+					"raw": "http://localhost:8000/predict",
+					"protocol": "http",
+					"host": [
+						"localhost"
+					],
+					"port": "8000",
+					"path": [
+						"predict"
+					]
+				},
+				"description": "Predict default probability for a high-risk loan application"
+			},
+			"response": []
+		}
+	]
+}
