@@ -1,214 +1,156 @@
-# Credit Risk ML
+# Project Submission
 
-## Tools used in this project
+## Tools Used
+This project leverages a modern MLOps stack to ensure reproducibility, scalability, and ease of use:
 
-* [hydra](https://hydra.cc/): Manage configuration files - [article](https://codecut.ai/stop-hard-coding-in-a-data-science-project-use-configuration-files-instead/)
-* [pdoc](https://github.com/pdoc3/pdoc): Automatically create an API documentation for your project
-* [pre-commit plugins](https://pre-commit.com/): Automate code reviewing formatting
-* [uv](https://github.com/astral-sh/uv): Ultra-fast Python package installer and resolver
-* [FastAPI](https://fastapi.tiangolo.com/): Modern, fast (high-performance), web framework for building APIs
-* [Docker](https://www.docker.com/): Platform for developing, shipping, and running applications
+*   **[Prefect](https://www.prefect.io/)**: For workflow orchestration and observability. It manages the training and inference pipelines as flows and tasks.
+*   **[Hydra](https://hydra.cc/)**: For flexible configuration management. It allows easy switching between models (PD vs. LGD) and pipelines via YAML files and CLI overrides.
+*   **[MLflow](https://mlflow.org/)**: For experiment tracking. It logs model parameters, metrics, and artifacts to a local SQLite database.
+*   **[FastAPI](https://fastapi.tiangolo.com/)**: For serving the trained PD model as a REST API.
+*   **[uv](https://github.com/astral-sh/uv)**: For extremely fast Python package management and dependency resolution.
+*   **XGBoost & CatBoost**: The core machine learning algorithms used for the Probability of Default (PD) and Loss Given Default (LGD) models respectively.
 
-## Project Structure
+## Setup
 
+This project uses `uv` for dependency management.
+
+1.  **Install uv** (if not already installed):
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+
+2.  **Sync Dependencies**:
+    Run the following command to create the virtual environment and install all locked dependencies:
+    ```bash
+    uv sync
+    ```
+
+3.  **Start Prefect Server**:
+    To view the pipeline runs in the Prefect UI, start the server:
+    ```bash
+    uv run prefect server start
+    ```
+    Then open [http://localhost:4200](http://localhost:4200) in your browser.
+
+## Running Pipelines
+
+The entry point for all pipelines is `src/main.py`. The specific pipeline to run is controlled by the `project` and `project.pipeline` configuration parameters.
+
+### 1. Train Probability of Default (PD) Model
+To run the training pipeline for the PD model (XGBoost):
 ```bash
-.
-├── config
-│   ├── main.yaml                   # Main configuration file
-│   ├── model                       # Configurations for training model
-│   │   ├── model1.yaml             # First variation of parameters to train model
-│   │   └── model2.yaml             # Second variation of parameters to train model
-│   └── process                     # Configurations for processing data
-│       ├── process1.yaml           # First variation of parameters to process data
-│       └── process2.yaml           # Second variation of parameters to process data
-├── data
-│   ├── final                       # data after training the model
-│   ├── processed                   # data after processing
-│   └── raw                         # raw data
-├── docs                            # documentation for your project
-├── .gitignore                      # ignore files that cannot commit to Git
-├── Dockerfile                      # Dockerfile for building the image
-├── docker-compose.yaml             # Docker Compose file for running the service
-├── models                          # store models
-├── notebooks                       # store notebooks
-├── .pre-commit-config.yaml         # configurations for pre-commit
-├── .python-version                 # specify Python version for the project
-├── pyproject.toml                  # project metadata and dependencies
-├── README.md                       # describe your project
-├── src                             # store source code
-│   ├── __init__.py                 # make src a Python module
-│   ├── app.py                      # FastAPI application
-│   ├── process.py                  # process data before training model
-│   ├── train_model.py              # train model
-│   └── utils.py                    # store helper functions
-└── tests                           # store tests
-    ├── __init__.py                 # make tests a Python module
-    ├── test_process.py             # test functions for process.py
-    └── test_train_model.py         # test functions for train_model.py
+uv run src/main.py project=pd_model project.pipeline=training
 ```
+**What this does:**
+*   Loads and cleans raw data.
+*   Creates the target variable (Default within 12 months).
+*   Performs feature engineering (imputation, encoding, transformations).
+*   Trains an XGBoost model.
+*   Logs metrics to MLflow and saves the model to `models/xgboost_model.joblib`.
 
-## Version Control Setup
-
-1. Initialize Git in your project directory:
+### 2. Train Loss Given Default (LGD) Model
+To run the training pipeline for the LGD model (CatBoost):
 ```bash
-git init
+uv run src/main.py project=lgd_model project.pipeline=training
 ```
+**What this does:**
+*   Loads data and filters for defaulted loans.
+*   Calculates LGD target.
+*   Trains a CatBoost regression model.
+*   Saves the model to `models/catboost_regression_model.joblib`.
 
-2. Add your remote repository:
+### 3. Build & Test Inference Pipeline
+To build the inference pipeline (combining preprocessing and model) and test it:
 ```bash
-# For HTTPS
-git remote add origin https://github.com/username/repository-name.git
-
-# For SSH
-git remote add origin git@github.com:username/repository-name.git
+uv run src/main.py project=pd_model project.pipeline=inference
 ```
+**What this does:**
+*   **Inference Pipeline Creation**: It loads the individually trained artifacts (OneHotEncoder, OrdinalEncoder, KNNImputer, XGBoost Model) and assembles them into a unified `scikit-learn` pipeline. This ensures that raw data goes in and a prediction comes out, with no manual preprocessing steps required during serving.
+*   **Serialization**: Saves the full pipeline to `models/inference_pipeline.joblib`.
+*   **Verification**: Runs a quick prediction test on a sample row to ensure the pipeline works end-to-end.
 
-3. Create and switch to a new branch:
+## Configuration
+
+Configuration is managed via **Hydra** in `config/main.yaml`. You can inspect this file to see default paths and settings.
+
+You can override any configuration value from the command line. For example, to use a different raw data file:
 ```bash
-git checkout -b main
+uv run src/main.py project=pd_model data.raw_data=./data/new_loan_data.csv
 ```
 
-4. Add and commit your files:
-```bash
-git add .
-git commit -m "Initial commit"
-```
+## (Optional) Running the API
 
-5. Push to your remote repository:
-```bash
-git push -u origin main
-```
+To serve the trained PD model via a REST API:
 
-## Set up the environment
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/)
-
-2. Install dependencies:
-
-- To install all dependencies from pyproject.toml, run:
-
-```bash
-uv sync --all-extras
-```
-
-- To install only production dependencies, run:
-
-```bash
-uv sync
-```
-
-Note: To follow the rest of the instructions in this README (including running tests, generating documentation, and using pre-commit hooks), it is recommended to install all dependencies using `uv sync --all-extras`.
-
-3. Run Python scripts:
-
-```bash
-uv run src/process.py
-```
-
-## Set up pre-commit hooks
-Set up pre-commit:
-```bash
-uv run pre-commit install
-```
-
-The pre-commit configuration is already set up in `.pre-commit-config.yaml`. This includes:
-* `ruff`: A fast Python linter and code formatter that will automatically fix issues when possible
-* `black`: Python code formatting to ensure consistent code style
-* `mypy`: Static type checking for Python to catch type-related errors before runtime
-
-Pre-commit will now run automatically on every commit. If any checks fail, the commit will be aborted and the issues will be automatically fixed when possible.
-
-## View and alter configurations
-
-The project uses Hydra to manage configurations. You can view and modify these configurations from the command line.
-
-To view available configurations:
-```bash
-uv run src/process.py --help
-```
-
-Output:
-
-```yaml
-process is powered by Hydra.
-
-== Configuration groups ==
-Compose your configuration from those groups (group=option)
-
-model: model1, model2
-process: process1, process2
-
-
-== Config ==
-Override anything in the config (foo.bar=value)
-
-process:
-  use_columns:
-  - col1
-  - col2
-model:
-  name: model1
-data:
-  raw: data/raw/sample.csv
-  processed: data/processed/processed.csv
-  final: data/final/final.csv
-```
-
-To override configurations (for example, changing the input data file):
-```bash
-uv run src/process.py data.raw=sample2.csv
-```
-
-Output:
-
-```
-Process data using sample2.csv
-Columns used: ['col1', 'col2']
-```
-
-You can override any configuration value shown in the help output. Multiple overrides can be combined in a single command. For more information about Hydra's configuration system, visit the [official documentation](https://hydra.cc/docs/intro/).
-
-## Auto-generate API documentation
-Generate static documentation:
-```bash
-uv run pdoc src -o docs
-```
-
-Start documentation server (available at http://localhost:8080):
-```bash
-uv run pdoc src --http localhost:8080
-```
-
-The documentation will be generated from your docstrings and type hints in your Python files. The static documentation will be saved in the `docs` directory, while the live server allows you to view the documentation with hot-reloading as you make changes.
-
-## Run API Server
-
-You can run the API server locally using `uvicorn`:
 ```bash
 uv run uvicorn src.app:app --reload
 ```
 
-The API will be available at `http://localhost:8000`. You can access the automatic API documentation at `http://localhost:8000/docs`.
+*   **API Documentation (Swagger UI)**: Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser to test the endpoints interactively.
+*   **Health Check**: [http://localhost:8000/](http://localhost:8000/)
 
-## Docker
+### Postman Collection
+You can import the provided Postman collection to test the API endpoints.
+1.  Open Postman.
+2.  Click **Import**.
+3.  Select the file `tests/Credit Risk ML FAST API.postman_collection.json`.
+4.  The collection **Credit Risk ML API Copy** will be imported with the following requests:
+    *   **Health Check**: Verifies the API is running.
+    *   **Single Prediction - Low Risk**: A sample request representing a low-risk applicant.
+    *   **Single Prediction - High Risk**: A sample request representing a high-risk applicant.
 
-You can also run the application using Docker.
+## Inspecting Results
 
-1. Build and run the container using Docker Compose:
-
+### (Optional) MLflow Experiments
+To view training runs, metrics, and parameters:
 ```bash
-docker-compose up --build
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
 ```
+Then open [http://localhost:5000](http://localhost:5000) in your browser.
 
-The API will be available at `http://localhost:8000`.
+### Presentation & Reports
+The `presentation/` folder contains detailed analysis and interpretability reports.
 
-2. Alternatively, build the image manually:
+#### Interpretability (`presentation/interpretability_pd.ipynb`)
+We use advanced techniques to explain the model's predictions:
+*   **Feature Importance**: Global importance of features in the XGBoost model.
+*   **SHAP Values**: Local interpretability to understand *why* a specific loan was classified as high or low risk. This helps in explaining decisions to stakeholders and customers.
 
-```bash
-docker build -t credit_risk_ml .
-```
+## Model Results
 
-3. Run the container:
+### Probability of Default (PD) Model
+The PD model achieves strong performance in distinguishing between default and non-default loans.
 
-```bash
-docker run -p 8000:8000 credit_risk_ml
-```
+**ROC-AUC Curve:**
+![ROC Curve](presentation/roc_curve.png)
+
+### Loss Given Default (LGD) Model
+The LGD model predicts the loss percentage for defaulted loans.
+
+| Model | MAE | RMSE | R² | Spearman Corr | Pearson Corr |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| CatBoost LGD | 0.082 | 0.1279 | 0.836 | 0.8994 | 0.9146 |
+
+### Hyperparameter Optimization
+We use **Optuna** for hyperparameter tuning. The optimization history, parameter importance, and other visualizations are saved in the `models/optuna_plots/` directory for both models:
+*   `models/optuna_plots/pd_model/`: Plots for the Probability of Default model.
+*   `models/optuna_plots/lgd_model/`: Plots for the Loss Given Default model.
+
+These plots provide insights into the tuning process and the impact of different hyperparameters on model performance.
+
+### Artifacts
+Trained models and encoders are saved in the `models/` directory:
+*   `xgboost_model.joblib`
+*   `inference_pipeline.joblib`
+*   `catboost_regression_model.joblib`
+*   `one_hot_encoder.joblib`, `ordinal_encoder.joblib`, `knn_imputer.joblib`
+
+## Future Improvements
+
+1.  **Feature Expansion**: Include more variables (e.g., Occupation) and develop more complex engineered features to capture non-linear relationships and improve model predictive power.
+2.  **Containerization**: Dockerize the FastAPI application to ensure consistent environments across development, testing, and production, facilitating easier deployment and reproducibility.
+3.  **Advanced MLflow Usage**: Utilize MLflow not just for tracking experiments, but also for end-to-end model lifecycle management, including model registry, versioning, and automated best model selection based on specific metrics.
+4.  **Pre-commit Hooks**: Enable pre-commit hooks to automatically enforce code quality standards (linting, formatting) and run tests before every commit, ensuring a clean and stable codebase.
+5.  **CI/CD Pipeline**: Implement a Continuous Integration/Continuous Deployment pipeline using GitHub Actions to automate testing, building, and deploying the application and models.
+6.  **LLM Interpretability Layer**: Integrate a Large Language Model (LLM) layer to analyze SHAP values and feature importance, providing natural language explanations for model predictions to make them more accessible to non-technical stakeholders.
+7.  **Monotonic Constraints**: Apply monotonic constraints to the XGBoost/CatBoost models where appropriate (e.g., higher income should generally lower default risk) to ensure the models behave logically and are robust to outliers.

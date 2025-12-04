@@ -179,5 +179,5 @@ class XGBoostingTransformer(BaseEstimator, TransformerMixin):
     
     def transform(self, X, y=None):
         X = X.copy()
-        predictions = self.model.predict(X)
+        predictions = self.model.predict_proba(X)[:, 1]
         return predictions
