@@ -6,46 +6,35 @@ uv run src/main.py
 
 from prefect import flow
 import mlflow
-from sklearn.metrics import confusion_matrix, roc_curve, auc
-from sklearn.model_selection import train_test_split
-from data_load import (
-    select_columns,
-    data_preprocessing_lgd
-)
+from data_load import data_preprocessing_lgd
 from data_processing import (
     create_pd12_target,
-    categorical_variables_task,
-    continuous_variables_transformations,
-    knn_impute_continuous_variables,
-    set_column_dtypes,
-    ordinal_encoding,
     clean_data,
-    ordinal_encoding_lgd
 )
 from feature_engineering import (
-    train_test_split_task,
-    one_hot_encode_features,
-    engineered_features,
-    feature_engineering_lgd
+    out_of_time_split,
+    feature_engineering_lgd,
+    LGD_CATEGORICAL_FEATURES,
 )
 from train_model import (
     train_xgboost_model,
     train_regression_model
 )
+from evaluation import evaluate_pd_model, evaluate_lgd_model
+from interpretability import plot_feature_importance, shap_summary_plot
 import pandas as pd
 import hydra
 import os
 from omegaconf import DictConfig
 from datetime import datetime
 import joblib
+from sklearn.pipeline import Pipeline
 
 from pipeline_builder import (
-    build_inference_pipeline,
+    build_preprocessing_pipeline,
     save_pipeline,
     load_pipeline
 )
-import xgboost as xgb
-import matplotlib.pyplot as pl
 
 
 DATE = datetime.today().strftime("%Y-%m-%d %H:%M")
@@ -68,101 +57,95 @@ def pd_training_evaluation_pipeline(config: DictConfig) -> pd.DataFrame:
     )
     data_processed.to_csv(config.project.data.processed, index=False)
 
-    # Processing the data for training(Main functions in pipeline)
-    data_features = (
-        data_processed
-        .pipe(select_columns)
-        .pipe(knn_impute_continuous_variables)
-        .pipe(engineered_features)
-        .pipe(set_column_dtypes)
-        .pipe(categorical_variables_task)
-        .pipe(continuous_variables_transformations)
-        .pipe(ordinal_encoding)
-        .pipe(one_hot_encode_features)
-        .merge(
-            data_processed.filter(["LoanId", "DefaultTarget_12m"]),
-            on = "LoanId",
-            how = "inner"
-        )
-        .astype({"DefaultTarget_12m": "int64"})
-        .drop(columns=["LoanId"])
-    )
-    
-    data_features.to_csv(config.project.data.features, index=False)
+    # Out-of-time split on the raw rows, before any preprocessing is fitted
+    train_raw, test_raw = out_of_time_split(data_processed, "LoanDate")
 
-    # Splitting the data into train and test using stratified sampling to maintain class balance
-    train_data, test_data, train_target, test_target = train_test_split_task(
-        data_features.drop(columns=["DefaultTarget_12m"]),
-        data_features["DefaultTarget_12m"]
-    )
+    # Preprocessing (imputer, log caps, encoders) is fitted on the training split only
+    preprocessor = build_preprocessing_pipeline()
+    train_data = preprocessor.fit_transform(train_raw)
+    test_data = preprocessor.transform(test_raw)
+    train_target = train_raw["DefaultTarget_12m"].reset_index(drop=True)
+    test_target = test_raw["DefaultTarget_12m"].reset_index(drop=True)
+
     # Saving data for tracalbilty and evaluation
     pd.concat([train_data, train_target], axis=1).to_csv(config.project.data.train, index=False)
     pd.concat([test_data, test_target], axis=1).to_csv(config.project.data.test, index=False)
-    
-    # Runinng Optuna for training and hyperparameter optimization
-    model = train_xgboost_model(
-        train_data, 
-        train_target
-    )
-    
-    # Save the trained model
+
+    with mlflow.start_run(run_name="pd_model_run", tags={"model": "xgboost"}):
+        # Runinng Optuna for training and hyperparameter optimization
+        model = train_xgboost_model(
+            train_data,
+            train_target
+        )
+
+        evaluate_pd_model(
+            test_target,
+            model.predict_proba(test_data)[:, 1],
+            test_raw["Country"].reset_index(drop=True),
+            metrics_path=config.artifacts.pd_metrics,
+            plot_path=config.artifacts.pd_evaluation_plot,
+        )
+
+    plot_feature_importance(model)
+    shap_summary_plot(model, test_data)
+
+    # Save the trained model, and the fitted preprocessing + model as the inference pipeline
     joblib.dump(model, config.artifacts.xgboost_model)
     print(f"Model saved to {config.artifacts.xgboost_model}")
-    
+    save_pipeline(Pipeline(preprocessor.steps + [("model", model)]), config.artifacts.inference_pipeline)
+
     return None
 
 
 @flow(flow_run_name=f"ML Inference pipeline run on {DATE}", log_prints=True)
 def pd_inference_pipeline(config: DictConfig) -> pd.DataFrame:
     """
-    This will task the test set and the final predictions, interpretability and evaluate the model 
+    Smoke-tests the saved inference pipeline on raw rows from the processed data.
     """
-    pipeline = build_inference_pipeline(
-        model_path=config.artifacts.xgboost_model,
-        knn_imputer_path=config.artifacts.knn_imputer,
-        ordinal_encoder_path=config.artifacts.ordinal_encoder,
-        onehot_encoder_path=config.artifacts.one_hot_encoder,
-    )
-    save_pipeline(pipeline)
+    pipeline = load_pipeline(config.artifacts.inference_pipeline)
+    data = pd.read_csv(config.project.data.processed).head(5)
+    print(f"Predicted PDs: {pipeline.predict_proba(data)[:, 1]}")
 
-    #Testing the pipeline
-    data = (
-        pd.read_csv(config.project.data.processed)
-        .head(1)
-    )
-    results = pipeline.transform(data)
-    
     return None
 
 @flow(flow_run_name= f"LGD training pipeline run on {DATE}", log_prints=True)
 def lgd_training_evaluation_pipeline(config: DictConfig) -> pd.DataFrame:
 
+    mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    mlflow.set_experiment("lgd_model_experiment")
+
     features = (
         pd.read_csv(config.data.raw_data, sep = ";")
         .pipe(data_preprocessing_lgd)
         .pipe(feature_engineering_lgd)
-        .pipe(ordinal_encoding_lgd)
     )
     #Saving the features for tracking
     features.to_csv(config.project.data.features, index=False)
 
-
-    lgd = features["LossGivenDefault"]
-    X_train, X_test, y_train, y_test = train_test_split(
-        features.drop("LossGivenDefault", axis=1),
-        lgd,
-        test_size=0.1,
-        random_state=42
-    )
+    # Out-of-time split on default date
+    train, test = out_of_time_split(features, "DefaultDate")
+    X_train, y_train = train.drop(columns=["LGD", "DefaultDate"]), train["LGD"]
+    X_test, y_test = test.drop(columns=["LGD", "DefaultDate"]), test["LGD"]
     pd.concat([X_train, y_train], axis=1).to_csv(config.project.data.train, index=False)
     pd.concat([X_test, y_test], axis=1).to_csv(config.project.data.test, index=False)
-    model = train_regression_model(X_train, y_train)
+
+    with mlflow.start_run(run_name="lgd_model_run", tags={"model": "catboost"}):
+        model = train_regression_model(X_train, y_train, LGD_CATEGORICAL_FEATURES)
+        evaluate_lgd_model(
+            y_test,
+            model.predict(X_test).clip(0, 1),
+            y_train.mean(),
+            metrics_path=config.artifacts.lgd_metrics,
+        )
     joblib.dump(model, config.artifacts.catboost_regression_model)
     
     return None
 
 @hydra.main(config_path="../config", config_name="main", version_base="1.2")
 def main(config: DictConfig) -> None:
+
+    for path in config.project.data.values():
+        os.makedirs(os.path.dirname(path), exist_ok=True)
 
     if config.project.name == "lgd_model":
         if config.project.pipeline == "training":

@@ -1,0 +1,12 @@
+.git
+.venv
+data/
+mlruns/
+catboost_info/
+docs/
+presentation/
+**/__pycache__
+outputs/
+mlflow.db
+.vscode/
+**/.DS_Store

@@ -1,0 +1,15 @@
+{
+  "test_roc_auc": 0.7262,
+  "test_gini": 0.4524,
+  "test_ks": 0.3313,
+  "test_brier": 0.1079,
+  "test_default_rate": 0.138,
+  "test_mean_predicted_pd": 0.1284,
+  "test_n": 25737,
+  "test_roc_auc_by_country": {
+    "EE": 0.7076,
+    "ES": 0.6289,
+    "FI": 0.6752,
+    "NL": 0.5247
+  }
+}

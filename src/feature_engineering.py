@@ -1,51 +1,22 @@
 from prefect import task
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder, RobustScaler
-from sklearn.model_selection import train_test_split
-import joblib
+from sklearn.preprocessing import LabelEncoder, RobustScaler
 import numpy as np
 
 
 
 @task
-def train_test_split_task(df: pd.DataFrame, target: pd.Series) -> pd.DataFrame:
+def out_of_time_split(df: pd.DataFrame, date_col: str, test_size: float = 0.10):
     """
-    Initial split to create the test set to test the final model
+    Out-of-time split: the most recent `test_size` share of rows (by `date_col`) becomes
+    the test set, so the model is evaluated on loans from a later period than it was
+    trained on.
     """
-    X_train, X_test, y_train, y_test = train_test_split(
-        df,
-        target,
-        test_size=0.10,
-        stratify=target,
-        random_state=42       
-    )
-    return X_train, X_test, y_train, y_test
-
-
-@task
-def one_hot_encode_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Encodes the features
-    """
-    encoder = OneHotEncoder(handle_unknown='ignore')
-    categorical_features = df.select_dtypes(include=["category", "object"])
-    non_categorical_features = df.select_dtypes(exclude=["category", "object"])
-    
-    # Convert all categorical features to string to handle mixed types
-    categorical_features = categorical_features.astype(str)
-    
-    encoder.fit(categorical_features)
-    encoded_features = encoder.transform(categorical_features)
-    encoded_features = pd.DataFrame(encoded_features.toarray(), 
-                                    columns=encoder.get_feature_names_out()
-                                    )
-    joblib.dump(encoder, "./models/one_hot_encoder.joblib")
-    
-    # Reset index of non-categorical features to align with the new encoded dataframe
-    non_categorical_features = non_categorical_features.reset_index(drop=True)
-    
-    return pd.concat([non_categorical_features, encoded_features], axis=1)
-
+    cutoff = df[date_col].quantile(1 - test_size)
+    train = df[df[date_col] < cutoff]
+    test = df[df[date_col] >= cutoff]
+    print(f"Out-of-time split on {date_col} at {cutoff.date()}: {len(train)} train / {len(test)} test rows")
+    return train, test
 
 
 @task
@@ -78,32 +49,20 @@ def engineered_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+LGD_CATEGORICAL_FEATURES = ["Country", "Rating"]
+
+
 @task
 def feature_engineering_lgd(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Create features for the LGD model 
+    Create features for the LGD model from information known at the default date.
+    DefaultDate is kept for the out-of-time split and dropped before training.
     """
     df = (
         df
-        .assign(HasPrimaryArrears = lambda df_: np.where(df_['CurrentDebtDaysPrimary'] > 0, 1, 0))
-        .assign(HasSecondaryArrears = lambda df_: np.where(df_['CurrentDebtDaysSecondary'] > 0, 1, 0))
-        .assign(StageActiveDays = lambda df_: ((df_['LastObservationDate'] - df_['StageActiveSince']).dt.days).clip(lower=0))
-        .assign(DaysInPrincipalDebt = lambda df_: ((df_['LastObservationDate'] - df_['DebtOccuredOn']).dt.days).clip(lower=0))
-        .assign(DaysInInterestDebt = lambda df_: ((df_['LastObservationDate'] - df_['DebtOccuredOnForSecondary']).dt.days).clip(lower=0))
-        .assign(HasPrincipalDebt = lambda df_: np.where(
-            df_["DebtOccuredOn"].notna(), 
-            1, 
-            0
-        ))
-        .assign(HasInterestDebt = lambda df_: np.where(
-            df_["DebtOccuredOnForSecondary"].notna(), 
-            1, 
-            0
-        ))
-        .drop(columns=["StageActiveSince", "DebtOccuredOn", "DebtOccuredOnForSecondary", "LastObservationDate"])
-        .fillna({"DaysInPrincipalDebt": 0,
-                 "DaysInInterestDebt": 0,
-                 "StageActiveDays": 0})
+        .assign(MonthsOnBookAtDefault = lambda df_: (df_["DefaultDate"] - df_["LoanDate"]).dt.days / 30.44)
+        .assign(ExposureToAmountRatio = lambda df_: df_["EAD1"] / df_["Amount"])
+        .drop(columns=["LoanDate"])
     )
 
     return df

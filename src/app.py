@@ -42,7 +42,7 @@ app = FastAPI(
 class LoanRequest(BaseModel):
     """Schema for loan application data"""
     LoanId: Optional[str] = Field(None, description="Loan ID")
-    NewCreditCustomer: Optional[str] = Field(None, description="Whether customer is new to credit")
+    NewCreditCustomer: Optional[bool] = Field(None, description="True if the customer has no previous loans with Bondora")
     VerificationType: Optional[int] = Field(None, description="Type of verification")
     LoanDuration: Optional[int] = Field(None, description="Loan duration in months")
     IncomeFromPrincipalEmployer: Optional[float] = Field(None, description="Income from principal employer")
@@ -68,7 +68,6 @@ class LoanRequest(BaseModel):
     PreviousEarlyRepaymentsCountBeforeLoan: Optional[float] = Field(None, description="Number of previous early repayments")
     PreviousRepaymentsBeforeLoan: Optional[float] = Field(None, description="Number of previous repayments")
     Country: Optional[str] = Field(None, description="Country code")
-    Gender: Optional[float] = Field(None, description="Gender (0=Male, 1=Female)")
     MonthlyPayment: Optional[float] = Field(None, description="Monthly payment amount")
     HomeOwnershipType: Optional[int] = Field(None, description="Home ownership type")
     NoOfPreviousLoansBeforeLoan: Optional[float] = Field(None, description="Number of previous loans")
@@ -112,7 +111,7 @@ async def predict_default(loan: LoanRequest):
         loan_data = pd.DataFrame([loan.model_dump()])
         
         # Make prediction using the pipeline
-        prediction = pipeline.transform(loan_data)[0]
+        prediction = pipeline.predict_proba(loan_data)[0, 1]
         
         # Determine risk level based on probability
         if prediction < 0.3:

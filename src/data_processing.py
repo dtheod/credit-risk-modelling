@@ -2,9 +2,6 @@ from prefect import flow, task
 import pandas as pd
 import numpy as np
 from utils import log_transform_series
-from sklearn.impute import KNNImputer
-from sklearn.preprocessing import OrdinalEncoder
-import joblib
 
 
 
@@ -33,66 +30,24 @@ def create_pd12_target(df: pd.DataFrame) -> pd.DataFrame:
     """
     Creates a PD-12 target:
       DefaultTarget_12m = 1  -> default within 12 months of LoanDate
-      DefaultTarget_12m = 0  -> observed >= 12 months with no default
-      DefaultTarget_12m = NaN -> censored (not yet 12 months of observation), usually drop from training
+      DefaultTarget_12m = 0  -> no default within 12 months of LoanDate
+    Loans issued less than 12 months before the data snapshot (ReportAsOfEOD) are
+    censored and dropped, whether or not they have defaulted yet. Scheduled dates such as
+    MaturityDate_Last or ContractEndDate lie in the future and say nothing about how long
+    a loan has actually been observed, so they are not used here.
     """
 
     df = df.copy()
+    df["LoanDate"] = pd.to_datetime(df["LoanDate"], errors="coerce")
+    df["DefaultDate"] = pd.to_datetime(df["DefaultDate"], errors="coerce")
+    snapshot_date = pd.to_datetime(df["ReportAsOfEOD"], errors="coerce").max()
 
-    # Put all date columns in a list to find the max date
-    date_cols = [
-        "LoanDate",
-        "DefaultDate",
-        "LoanApplicationStartedDate",
-        "LastPaymentOn",
-        "MaturityDate_Last",
-        "ContractEndDate",
-        "SoldInResale_Date",
-        "ListedOnUTC"
-    ]
+    # Keep only loans with a full 12-month observation window before the snapshot
+    df = df[(snapshot_date - df["LoanDate"]).dt.days >= 365]
 
-    # Keep only those that exist in the dataframe
-    date_cols = [c for c in date_cols if c in df.columns]
-
-    df[date_cols] = df[date_cols].apply(
-        pd.to_datetime, errors="coerce"
-    )
-
-    # --- 2. Loan-level last observed date (max of all known dates for that loan) ---
-    df["last_obs_date"] = df[date_cols].max(axis=1)
-
-    # --- 3. Days to default & default within 12 months ---
     days_to_default = (df["DefaultDate"] - df["LoanDate"]).dt.days
-    default_within_12m = df["DefaultDate"].notna() & (days_to_default <= 365)
+    df["DefaultTarget_12m"] = (df["DefaultDate"].notna() & (days_to_default <= 365)).astype("int64")
 
-    # --- 4. How long the loan is observed in total ---
-    days_observed = (df["last_obs_date"] - df["LoanDate"]).dt.days
-
-    # Loan has at least 12 months of observable life
-    fully_observed_12m = days_observed >= 365
-
-    # --- 5. Build target ---
-    #  1 if defaulted within 12m
-    #  0 if fully observed 12m and no default within 12m
-    #  NaN otherwise (too young / censored)
-    df["DefaultTarget_12m"] = np.where(
-        default_within_12m,
-        1,
-        np.where(
-            fully_observed_12m,
-            0,
-            np.nan
-        )
-    )
-
-    # --- 6. Optionally drop helper columns (keep LoanDate if you want vintage features) ---
-    df = df.drop(columns=["last_obs_date"], errors="ignore")
-
-    # Removing the loans that are not fully observed
-    df.dropna(subset=["DefaultTarget_12m"], inplace=True)
-
-    # If you want to mimic your original behavior more closely, you can also drop
-    # DefaultDate and LoanApplicationStartedDate here:
     df = df.drop(columns=["DefaultDate", "LoanApplicationStartedDate"], errors="ignore")
 
     return df
@@ -105,18 +60,31 @@ def clean_remove_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     return df
 
+# Numeric columns that hold category codes or counts. Everything else (amounts, rates,
+# engineered ratios) stays float.
+CODE_COLUMNS = [
+    "VerificationType",
+    "LoanDuration",
+    "Education",
+    "EmploymentStatus",
+    "ExistingLiabilities",
+    "LanguageCode",
+    "Age",
+    "UseOfLoan",
+    "PreviousEarlyRepaymentsCountBeforeLoan",
+    "HomeOwnershipType",
+    "NoOfPreviousLoansBeforeLoan",
+]
+
+
 @task
 def set_column_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Converts all float columns to integers
-    (Object/category columns are already handled by categorical_variables_task)
+    Rounds category-code and count columns (CODE_COLUMNS) to integers so they can be
+    mapped to categories. Continuous columns and engineered ratios are left untouched.
     """
-    # Convert all float columns to integers
-    float_cols = df.select_dtypes(include=['float64', 'float32']).columns
-    for col in float_cols:
-        df[col] = df[col].astype('int64')
-    
-    print(f"Converted {len(float_cols)} float columns to int64")
+    cols = [c for c in CODE_COLUMNS if c in df.columns]
+    df[cols] = df[cols].round().astype("int64")
     return df
 
 @task
@@ -197,20 +165,6 @@ def categorical_variables_task(df: pd.DataFrame) -> pd.DataFrame:
     
     df = (
         df
-        .assign(GenderCategorical = lambda df_: df_.Gender.case_when(
-            [
-                (df_["Gender"] == 0, "Male"),
-                (df_["Gender"] == 1, "Female"),
-                (df_["Gender"] == -1, "Undefined"),
-                (df_["Gender"] == 2, "Undefined")
-            ]
-            )
-        )
-        .drop(["Gender"], axis=1)
-    )
-
-    df = (
-        df
         .assign(HomeOwnershipCategorical = lambda df_: df_.HomeOwnershipType.case_when(
             [
                 (df_["HomeOwnershipType"] == 0, "Homeless"),
@@ -284,7 +238,6 @@ def categorical_variables_task(df: pd.DataFrame) -> pd.DataFrame:
         df
         .astype(
             {
-                "GenderCategorical": "category",
                 "EducationCategorical": "category",
                 "EmploymentCategorical": "category",
                 "VerificationCategorical": "category",
@@ -299,97 +252,17 @@ def categorical_variables_task(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
-@task
-def continuous_variables_transformations(df: pd.DataFrame) -> pd.DataFrame:
-
-    """
-    Applying Log transformations to highly skewed variables like:
-        - AmountOfPreviousLoansBeforeLoan
-        - FreeCash
-        - LiabilitiesTotal
-    """
-
-    df["AmountOfPreviousLoansBeforeLoan"] = log_transform_series("AmountOfPreviousLoansBeforeLoan", df)
-    df["LiabilitiesTotal"] = log_transform_series("LiabilitiesTotal", df)
-    return df
-
-@task
-def ordinal_encoding(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ordinal encoding of categorical variables:
-    - CreditScoreEsMicroL: M1-M10 (subprime categories)
-    """
-    # Define categories for each ordinal feature
-    subprime_categories = ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10"]
-    
-    # Create single encoder with both category lists
-    ordinal_encoder = OrdinalEncoder(
-        categories=[subprime_categories],
-        handle_unknown="use_encoded_value",
-        unknown_value=-1
-    )
-    
-    # Encode both columns at once
-    encoded_values = ordinal_encoder.fit_transform(df[["CreditScoreEsMicroL"]])
-    
-    # Assign encoded values to new columns
-    df["CreditScoreEsMicroLEnc"] = encoded_values[:, 0]
-    
-    # Drop original columns
-    df = df.drop(["CreditScoreEsMicroL"], axis=1)
-    
-    # Save the encoder
-    joblib.dump(ordinal_encoder, "./models/ordinal_encoder.joblib")
-    
-    return df
-
-@task
-def ordinal_encoding_lgd(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Ordinal encoding of late variables
-    """
-    late_or_worse_order = [
-        "0",        # never late
-        "1-7", "8-15",
-        "16-30", "31-60",
-        "61-90", "91-120",
-        "121-150", "151-180", "180"
-    ]
-    late_map = {v: i for i, v in enumerate(late_or_worse_order)}
-    worse_late_map = {v: i for i, v in enumerate(late_or_worse_order)}
-    
-    df = df.assign(
-        ActiveLateCategoryOrd = lambda df_: df_["ActiveLateCategory"].map(late_map),
-        WorseLateCategoryOrd = lambda df_: df_["WorseLateCategory"].map(worse_late_map)
-    )
-    
-    df = df.drop(["ActiveLateCategory", "WorseLateCategory"], axis=1)
-    
-    return df
+LOG_TRANSFORM_COLUMNS = ["AmountOfPreviousLoansBeforeLoan", "LiabilitiesTotal"]
 
 
 @task
-def knn_impute_continuous_variables(df: pd.DataFrame) -> pd.DataFrame:
+def continuous_variables_transformations(df: pd.DataFrame, caps: dict) -> pd.DataFrame:
+
     """
-    Imputes missing values in continuous variables using KNN Imputer
+    Applying Log transformations to highly skewed variables (LOG_TRANSFORM_COLUMNS),
+    after clipping at caps fitted on the training data (see ContinuousTransformer).
     """
-    # Identify continuous (numeric) columns, excluding the target if present
-    continuous_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    n_neighbors = 5
 
-    
-    # Check if there are any missing values in continuous columns
-    missing_counts = df[continuous_cols].isnull().sum()
-    cols_with_missing = missing_counts[missing_counts > 0].index.tolist()
-    
-    print(f"Imputing missing values in {len(cols_with_missing)} continuous columns using KNN (n_neighbors={n_neighbors})")
-    print(f"Columns with missing values: {cols_with_missing}")
-    
-    # Apply KNN Imputer
-    imputer = KNNImputer(n_neighbors=n_neighbors)
-    df[continuous_cols] = imputer.fit_transform(df[continuous_cols])
-    
-    joblib.dump(imputer, "./models/knn_imputer.joblib")
-
-
+    for col in LOG_TRANSFORM_COLUMNS:
+        df[col] = log_transform_series(col, df, caps[col])
     return df
