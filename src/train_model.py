@@ -64,18 +64,18 @@ def train_xgboost_model(X_train, y_train, n_trials=20):
     model.fit(X_train, y_train)
     y_pred = model.predict(X_train)
 
-    with mlflow.start_run(run_name="pd_model_run", tags={"model": "xgboost"}):
-        mlflow.log_params(best_params)
-        mlflow.log_metric("roc_auc", study.best_value)
-        mlflow.sklearn.log_model(model, "model")
-        
-        # Log feature names
-        mlflow.log_param("features", X_train.columns.tolist())
+    # Logged into the MLflow run opened by the calling flow
+    mlflow.log_params(best_params)
+    mlflow.log_metric("cv_roc_auc", study.best_value)
+    mlflow.sklearn.log_model(model, "model")
+
+    # Log feature names
+    mlflow.log_param("features", X_train.columns.tolist())
     
     return model
 
 @task
-def train_regression_model(X_train, y_train, n_trials=20):
+def train_regression_model(X_train, y_train, cat_features, n_trials=20):
     
     def objective(trial):
         params = {
@@ -87,6 +87,7 @@ def train_regression_model(X_train, y_train, n_trials=20):
             'bagging_temperature': trial.suggest_float('bagging_temperature', 0.0, 1.0),
             'border_count': trial.suggest_int('border_count', 32, 255),
             'loss_function': 'MAE',
+            'cat_features': cat_features,
             'verbose': False,
             'random_state': 42
         }
@@ -111,7 +112,11 @@ def train_regression_model(X_train, y_train, n_trials=20):
     best_params['loss_function'] = 'RMSE'
     best_params['verbose'] = False
     best_params['random_state'] = 42
-    
+    best_params['cat_features'] = cat_features
+
+    mlflow.log_params(best_params)
+    mlflow.log_metric("cv_mae", -study.best_value)
+
     final_model = CatBoostRegressor(**best_params)
     final_model.fit(X_train, y_train)
     

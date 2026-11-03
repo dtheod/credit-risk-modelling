@@ -1,0 +1,10 @@
+{
+  "test_mae": 0.2303,
+  "test_rmse": 0.2783,
+  "test_r2": 0.2056,
+  "test_spearman": 0.4854,
+  "test_pearson": 0.4581,
+  "test_baseline_mae": 0.2742,
+  "test_mean_lgd": 0.6576,
+  "test_n": 7401
+}

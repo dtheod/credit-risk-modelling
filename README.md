@@ -1,156 +1,135 @@
-# Project Submission
+# Credit Risk Modelling: PD and LGD on Bondora P2P Loans
 
-## Tools Used
-This project leverages a modern MLOps stack to ensure reproducibility, scalability, and ease of use:
+## Problem
 
-*   **[Prefect](https://www.prefect.io/)**: For workflow orchestration and observability. It manages the training and inference pipelines as flows and tasks.
-*   **[Hydra](https://hydra.cc/)**: For flexible configuration management. It allows easy switching between models (PD vs. LGD) and pipelines via YAML files and CLI overrides.
-*   **[MLflow](https://mlflow.org/)**: For experiment tracking. It logs model parameters, metrics, and artifacts to a local SQLite database.
-*   **[FastAPI](https://fastapi.tiangolo.com/)**: For serving the trained PD model as a REST API.
-*   **[uv](https://github.com/astral-sh/uv)**: For extremely fast Python package management and dependency resolution.
-*   **XGBoost & CatBoost**: The core machine learning algorithms used for the Probability of Default (PD) and Loss Given Default (LGD) models respectively.
+A consumer lender needs two numbers for each loan to price it and to hold provisions against it:
+
+* **PD (Probability of Default)**: the probability that a new applicant defaults within 12 months of the loan being issued. It is scored at application time, so the model uses only information available when the application is made.
+* **LGD (Loss Given Default)**: the share of the exposure that is lost once a loan has defaulted, after recoveries. It is scored at the default date, so the model uses only information known at that point.
+
+The data is Bondora's public loan book: about 330k peer-to-peer consumer loans issued between 2009 and 2023 in Estonia, Finland, Spain and Slovakia, with a snapshot date (`ReportAsOfEOD`) of 2023-10-15.
+
+## Headline results
+
+All numbers are on an **out-of-time** test set (the most recent 10% of loans by issue date for PD, and by default date for LGD). The pipelines write them to `models/metrics/*.json`.
+
+**PD (XGBoost)**
+
+| ROC AUC | Gini | KS | Brier | Test default rate | Mean predicted PD |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 0.726 | 0.452 | 0.331 | 0.108 | 13.8% | 12.8% |
+
+ROC AUC within each country: EE 0.708, FI 0.675, ES 0.629, NL 0.525 (NL has 174 test loans and does not appear in the training period).
+
+The 5-fold cross-validated AUC within the training period is 0.792. The gap to 0.726 comes from moving to an out-of-time test. Loans in the test window (April to October 2022) defaulted at 13.8%, against about 30% for 2014–2019 vintages. Calibration still holds: the mean predicted PD is 12.8% against an observed 13.8%.
+
+![PD evaluation](presentation/pd_evaluation.png)
+
+**LGD (CatBoost)**
+
+| MAE | Baseline MAE (train mean) | RMSE | R² | Spearman | Pearson |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 0.230 | 0.274 | 0.278 | 0.206 | 0.485 | 0.458 |
+
+The test set has 7,401 defaults, with a mean realised LGD of 66%. Realised LGD is much harder to predict than PD: the distribution is bimodal (many loans recover almost nothing, others recover in full), and recovery depends heavily on collection outcomes after default. An R² of around 0.2 is typical for this kind of model. An earlier version of this project reported R² 0.84, but that came from predicting Bondora's own LGD estimate using balances measured after default.
+
+## Modelling choices
+
+### PD target and censoring
+`DefaultTarget_12m = 1` if the loan defaulted within 365 days of `LoanDate`, otherwise 0. Loans issued less than 12 months before the snapshot date are dropped, because their 12-month outcome is not yet known. The observation window is measured against the data snapshot. It is not measured against scheduled dates such as `MaturityDate_Last`, which lie in the future.
+
+### No leakage from preprocessing or time
+* The imputer, log-transform caps and encoders are sklearn transformers, fitted on the training split only (`src/transformers.py`).
+* The train/test split is out-of-time, not random.
+* Training saves the fitted preprocessing and the model as a single `models/inference_pipeline.joblib`, and the API serves exactly that object.
+
+### LGD target and features
+Bondora's `LossGivenDefault` column is **not** used as the target. It is filled for non-defaulted loans too, so it is Bondora's own ex-ante estimate rather than an observed loss. The target is the realised loss instead:
+
+`LGD = 1 - PrincipalRecovery / EAD1`, clipped to [0, 1]
+
+It is computed over defaults with at least 24 months between the default date and the snapshot, so that recoveries are largely complete. Features are limited to application data plus exposure at default (`EAD1`, `EAD2`, months on book at default). Balances, recovery stage, servicing costs and late-payment categories are measured at the snapshot date, and including them would leak the outcome.
+
+### Fair lending
+**Gender is excluded** from both models. EU and US fair-lending rules restrict its use in credit decisions. **Age is still a feature.** Several jurisdictions allow age in empirically derived scoring systems under conditions, so check local rules before using this model for real lending decisions.
+
+### Country dependence
+Country and the closely linked application language are strong PD features. Spanish loans in the training period defaulted at 52%, against 15% in Estonia and 23% in Finland. Together they account for 42% of XGBoost's average split gain and 10% of total gain. The interest rate is the largest single feature by total gain, at 28%. Country is a real pattern in the Bondora book, but it means part of the overall AUC comes from separating countries rather than borrowers. The within-country AUCs above show how well the model ranks borrowers within a single market.
+
+## Tools
+* **[Prefect](https://www.prefect.io/)**: orchestrates the training and inference pipelines as flows and tasks.
+* **[Hydra](https://hydra.cc/)**: configuration. You switch between PD and LGD and between pipelines from the CLI.
+* **[MLflow](https://mlflow.org/)**: tracks parameters, CV metrics and out-of-time test metrics in a local SQLite database.
+* **[Optuna](https://optuna.org/)**: hyperparameter search. Plots are saved in `models/optuna_plots/`.
+* **[FastAPI](https://fastapi.tiangolo.com/)**: serves the PD pipeline as a REST API.
+* **[uv](https://github.com/astral-sh/uv)**: dependency management.
+* **XGBoost and CatBoost**: the PD and LGD models.
 
 ## Setup
 
-This project uses `uv` for dependency management.
-
-1.  **Install uv** (if not already installed):
+1. Install [uv](https://github.com/astral-sh/uv) and sync the dependencies:
     ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh
+    uv sync --extra dev
     ```
+2. Download the Bondora loan dataset from [Bondora public reports](https://www.bondora.com/en/public-reports) and save it as `data/raw_data/LoanData.csv` (`;`-separated).
+3. (Optional) Start the Prefect UI with `uv run prefect server start`, then open http://localhost:4200.
 
-2.  **Sync Dependencies**:
-    Run the following command to create the virtual environment and install all locked dependencies:
-    ```bash
-    uv sync
-    ```
+## Running pipelines
 
-3.  **Start Prefect Server**:
-    To view the pipeline runs in the Prefect UI, start the server:
-    ```bash
-    uv run prefect server start
-    ```
-    Then open [http://localhost:4200](http://localhost:4200) in your browser.
-
-## Running Pipelines
-
-The entry point for all pipelines is `src/main.py`. The specific pipeline to run is controlled by the `project` and `project.pipeline` configuration parameters.
-
-### 1. Train Probability of Default (PD) Model
-To run the training pipeline for the PD model (XGBoost):
 ```bash
+# PD: target, out-of-time split, fit preprocessing + XGBoost, evaluate, save inference pipeline
 uv run src/main.py project=pd_model project.pipeline=training
-```
-**What this does:**
-*   Loads and cleans raw data.
-*   Creates the target variable (Default within 12 months).
-*   Performs feature engineering (imputation, encoding, transformations).
-*   Trains an XGBoost model.
-*   Logs metrics to MLflow and saves the model to `models/xgboost_model.joblib`.
 
-### 2. Train Loss Given Default (LGD) Model
-To run the training pipeline for the LGD model (CatBoost):
-```bash
+# PD: smoke-test the saved inference pipeline on raw rows
+uv run src/main.py project=pd_model project.pipeline=inference
+
+# LGD: realised-LGD target, out-of-time split, CatBoost, evaluate
 uv run src/main.py project=lgd_model project.pipeline=training
 ```
-**What this does:**
-*   Loads data and filters for defaulted loans.
-*   Calculates LGD target.
-*   Trains a CatBoost regression model.
-*   Saves the model to `models/catboost_regression_model.joblib`.
 
-### 3. Build & Test Inference Pipeline
-To build the inference pipeline (combining preprocessing and model) and test it:
-```bash
-uv run src/main.py project=pd_model project.pipeline=inference
-```
-**What this does:**
-*   **Inference Pipeline Creation**: It loads the individually trained artifacts (OneHotEncoder, OrdinalEncoder, KNNImputer, XGBoost Model) and assembles them into a unified `scikit-learn` pipeline. This ensures that raw data goes in and a prediction comes out, with no manual preprocessing steps required during serving.
-*   **Serialization**: Saves the full pipeline to `models/inference_pipeline.joblib`.
-*   **Verification**: Runs a quick prediction test on a sample row to ensure the pipeline works end-to-end.
+`project=pd_model project.pipeline=training` is the default, so plain `uv run src/main.py` trains the PD model. Hydra lets you override any value in `config/`, for example `data.raw_data=./data/other.csv`.
 
-## Configuration
+Outputs:
+* `models/inference_pipeline.joblib`: fitted preprocessing plus the PD model (this is what the API serves)
+* `models/xgboost_model.joblib`, `models/catboost_regression_model.joblib`: the bare models
+* `models/metrics/pd_metrics.json`, `models/metrics/lgd_metrics.json`: out-of-time test metrics
+* `presentation/pd_evaluation.png`: ROC and calibration on the test set
+* `models/interpretability/`: XGBoost feature importance and SHAP summary plots
+* MLflow runs: `uv run mlflow ui --backend-store-uri sqlite:///mlflow.db`
 
-Configuration is managed via **Hydra** in `config/main.yaml`. You can inspect this file to see default paths and settings.
-
-You can override any configuration value from the command line. For example, to use a different raw data file:
-```bash
-uv run src/main.py project=pd_model data.raw_data=./data/new_loan_data.csv
-```
-
-## (Optional) Running the API
-
-To serve the trained PD model via a REST API:
+## Serving the PD model
 
 ```bash
-uv run uvicorn src.app:app --reload
+uv run uvicorn src.app:app --reload        # local
+docker compose up --build                  # or in Docker
 ```
 
-*   **API Documentation (Swagger UI)**: Open [http://localhost:8000/docs](http://localhost:8000/docs) in your browser to test the endpoints interactively.
-*   **Health Check**: [http://localhost:8000/](http://localhost:8000/)
+* Swagger UI: http://localhost:8000/docs
+* Health check: http://localhost:8000/
+* Postman: import `tests/Credit Risk ML FAST API.postman_collection.json`. It contains a health check plus a low-risk and a high-risk example applicant.
 
-### Postman Collection
-You can import the provided Postman collection to test the API endpoints.
-1.  Open Postman.
-2.  Click **Import**.
-3.  Select the file `tests/Credit Risk ML FAST API.postman_collection.json`.
-4.  The collection **Credit Risk ML API Copy** will be imported with the following requests:
-    *   **Health Check**: Verifies the API is running.
-    *   **Single Prediction - Low Risk**: A sample request representing a low-risk applicant.
-    *   **Single Prediction - High Risk**: A sample request representing a high-risk applicant.
+## Tests
 
-## Inspecting Results
-
-### (Optional) MLflow Experiments
-To view training runs, metrics, and parameters:
 ```bash
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+uv run pytest
 ```
-Then open [http://localhost:5000](http://localhost:5000) in your browser.
 
-### Presentation & Reports
-The `presentation/` folder contains detailed analysis and interpretability reports.
+The tests use small synthetic data and cover these behaviours:
+* PD target censoring
+* ratio features keep their fractional values
+* preprocessing state is learned only at fit time
+* the column layout of API requests
+* the realised-LGD target and the leakage-free LGD feature set
 
-#### Interpretability (`presentation/interpretability_pd.ipynb`)
-We use advanced techniques to explain the model's predictions:
-*   **Feature Importance**: Global importance of features in the XGBoost model.
-*   **SHAP Values**: Local interpretability to understand *why* a specific loan was classified as high or low risk. This helps in explaining decisions to stakeholders and customers.
+Pre-commit hooks (ruff, mypy) are configured in `.pre-commit-config.yaml`. Enable them with `uv run pre-commit install`.
 
-## Model Results
+## Further analysis
+`presentation/interpretability_pd.ipynb` contains feature-importance and SHAP analysis of the PD model.
 
-### Probability of Default (PD) Model
-The PD model achieves strong performance in distinguishing between default and non-default loans.
-
-**ROC-AUC Curve:**
-![ROC Curve](presentation/roc_curve.png)
-
-### Loss Given Default (LGD) Model
-The LGD model predicts the loss percentage for defaulted loans.
-
-| Model | MAE | RMSE | R² | Spearman Corr | Pearson Corr |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| CatBoost LGD | 0.082 | 0.1279 | 0.836 | 0.8994 | 0.9146 |
-
-### Hyperparameter Optimization
-We use **Optuna** for hyperparameter tuning. The optimization history, parameter importance, and other visualizations are saved in the `models/optuna_plots/` directory for both models:
-*   `models/optuna_plots/pd_model/`: Plots for the Probability of Default model.
-*   `models/optuna_plots/lgd_model/`: Plots for the Loss Given Default model.
-
-These plots provide insights into the tuning process and the impact of different hyperparameters on model performance.
-
-### Artifacts
-Trained models and encoders are saved in the `models/` directory:
-*   `xgboost_model.joblib`
-*   `inference_pipeline.joblib`
-*   `catboost_regression_model.joblib`
-*   `one_hot_encoder.joblib`, `ordinal_encoder.joblib`, `knn_imputer.joblib`
-
-## Future Improvements
-
-1.  **Feature Expansion**: Include more variables (e.g., Occupation) and develop more complex engineered features to capture non-linear relationships and improve model predictive power.
-2.  **Containerization**: Dockerize the FastAPI application to ensure consistent environments across development, testing, and production, facilitating easier deployment and reproducibility.
-3.  **Advanced MLflow Usage**: Utilize MLflow not just for tracking experiments, but also for end-to-end model lifecycle management, including model registry, versioning, and automated best model selection based on specific metrics.
-4.  **Pre-commit Hooks**: Enable pre-commit hooks to automatically enforce code quality standards (linting, formatting) and run tests before every commit, ensuring a clean and stable codebase.
-5.  **CI/CD Pipeline**: Implement a Continuous Integration/Continuous Deployment pipeline using GitHub Actions to automate testing, building, and deploying the application and models.
-6.  **LLM Interpretability Layer**: Integrate a Large Language Model (LLM) layer to analyze SHAP values and feature importance, providing natural language explanations for model predictions to make them more accessible to non-technical stakeholders.
-7.  **Monotonic Constraints**: Apply monotonic constraints to the XGBoost/CatBoost models where appropriate (e.g., higher income should generally lower default risk) to ensure the models behave logically and are robust to outliers.
+## Future improvements
+1. **Feature expansion**: add variables such as occupation, and build features for non-linear effects.
+2. **Model registry**: use the MLflow model registry for versioning and promotion, instead of joblib files.
+3. **CI/CD**: run the tests and a Docker build in GitHub Actions.
+4. **Monotonic constraints**: constrain features where the direction of risk is known, for example income.
+5. **LGD workout modelling**: model recoveries over time instead of excluding defaults with short workout periods.
+6. **Natural-language explanations**: turn SHAP output into explanations for non-technical stakeholders.

@@ -1,3 +1,4 @@
+import os
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import joblib
@@ -7,6 +8,8 @@ from prefect import task
 from omegaconf import DictConfig
 import shap
 from xgboost import XGBClassifier
+
+os.makedirs("./models/interpretability", exist_ok=True)
 
 
 @task
@@ -129,31 +132,4 @@ def shap_dependence_plots(model: XGBClassifier, data: pd.DataFrame, top_n_featur
         plt.close()
     
     print(f"SHAP dependence plots for top {top_n_features} features saved!")
-    return None
-
-@task
-def roc_plots(test_features, test_target):
-       # Generate predictions and probabilities
-    y_pred_proba = model.predict_proba(test_features)[:, 1]
-    
-    # Calculate ROC curve
-    fpr, tpr, thresholds = roc_curve(test_target, y_pred_proba)
-    roc_auc = auc(fpr, tpr)
-    
-    # Plot ROC curve
-    pl.figure(figsize=(10, 8))
-    pl.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
-    pl.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random Classifier')
-    pl.xlim([0.0, 1.0])
-    pl.ylim([0.0, 1.05])
-    pl.xlabel('False Positive Rate')
-    pl.ylabel('True Positive Rate')
-    pl.title('Receiver Operating Characteristic (ROC) Curve')
-    pl.legend(loc="lower right")
-    pl.grid(alpha=0.3)
-    pl.tight_layout()
-    pl.savefig("./models/interpretability/roc_curve.png", dpi=300, bbox_inches='tight')
-    pl.close()
-    print(f"ROC AUC Score: {roc_auc:.4f}")
-    print("ROC curve saved to ./models/interpretability/roc_curve.png")
     return None

@@ -1,7 +1,7 @@
 """
 Pipeline builder for credit risk modeling inference.
 
-Builds inference pipeline that loads pre-fitted artifacts (encoders, imputers, model).
+Builds the preprocessing pipeline shared by training and inference.
 
 Author: Danis Theodoulou
 """
@@ -11,53 +11,37 @@ from sklearn.pipeline import Pipeline
 
 from transformers import (
     DataSelector,
-    KNNImputerTransformer,
+    MedianImputerTransformer,
     DtypeSetter,
     CategoricalCreator,
     ContinuousTransformer,
     OrdinalEncoderTransformer,
     OneHotEncoderTransformer,
-    XGBoostingTransformer,
     FeatureEngineeringTransformer
 )
 
 
-def build_inference_pipeline(
-    model_path,
-    knn_imputer_path,
-    ordinal_encoder_path,
-    onehot_encoder_path
-):
+def build_preprocessing_pipeline():
     """
-    Builds the inference pipeline that loads all pre-fitted artifacts.
-    
-    This pipeline is used for making predictions on new data using the
-    artifacts saved during training.
-    
-    Args:
-        model_path: Path to saved XGBoost model
-        knn_imputer_path: Path to saved KNN imputer
-        ordinal_encoder_path: Path to saved ordinal encoder
-        onehot_encoder_path: Path to saved one-hot encoder
-    
+    Builds the (unfitted) preprocessing pipeline that turns raw loan data into model features.
+
+    It is fitted on the training split only. The training flow then appends the trained
+    model and saves the result as the inference pipeline, so serving runs exactly the
+    preprocessing that was fitted during training.
+
     Returns:
-        sklearn Pipeline object for inference
+        sklearn Pipeline object
     """
-    
-    # Build inference pipeline
-    inference_pipeline = Pipeline([
+    return Pipeline([
         ('selector', DataSelector()),
-        ('knn_imputer', KNNImputerTransformer()),
+        ('imputer', MedianImputerTransformer()),
         ('feature_engineering', FeatureEngineeringTransformer()),
         ('dtype_setter', DtypeSetter()),
         ('categorical_creator', CategoricalCreator()),
         ('continuous_transformer', ContinuousTransformer()),
-        ('ordinal_encoder', OrdinalEncoderTransformer(encoder_path=ordinal_encoder_path)),
-        ('onehot_encoder', OneHotEncoderTransformer(encoder_path=onehot_encoder_path)),
-        ('model', XGBoostingTransformer(model_path=model_path))
+        ('ordinal_encoder', OrdinalEncoderTransformer()),
+        ('onehot_encoder', OneHotEncoderTransformer()),
     ])
-    
-    return inference_pipeline
 
 
 def save_pipeline(pipeline, filepath='./models/inference_pipeline.joblib'):

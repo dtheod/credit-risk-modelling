@@ -96,5 +96,9 @@ multirun
 # Data
 data/*/*
 
+# Experiment tracking / training outputs
+mlruns/
+catboost_info/
+
 # Notebooks
 notebooks/*
